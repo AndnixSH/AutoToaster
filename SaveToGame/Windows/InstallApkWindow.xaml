@@ -1,0 +1,211 @@
+﻿<Window x:Class="SaveToGameWpf.Windows.InstallApkWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:localization="clr-namespace:SaveToGameWpf.Resources.Localizations"
+        xmlns:controls="clr-namespace:SaveToGameWpf.Controls"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:enums="clr-namespace:SharedData.Enums;assembly=SharedData"
+        xmlns:viewModels="clr-namespace:Interfaces.ViewModels;assembly=Interfaces"
+        mc:Ignorable="d"
+
+        Title="{Binding WindowTitle.Value, Mode=OneWay}"
+        Style="{StaticResource CommonWindowStyle}"
+        Width="600" Height="500"
+        MinWidth="600" MinHeight="500"
+        WindowStartupLocation="CenterScreen"
+        d:DataContext="{d:DesignInstance {x:Type viewModels:IInstallApkViewModel}}">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Margin="5">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Grid>
+                <Grid.Resources>
+                    <Style x:Key="CommonButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                        <Setter Property="Padding" Value="5"/>
+                    </Style>
+
+                    <Style x:Key="PickDropButton" TargetType="Button" BasedOn="{StaticResource CommonButton}">
+                        <Setter Property="AllowDrop" Value="True"/>
+                    </Style>
+
+                    <Style x:Key="CheckMarkRun" TargetType="Run">
+                        <Setter Property="FontSize" Value="12"/>
+                        <Setter Property="Foreground" Value="{DynamicResource TextBlock_Foreground}"/>
+                    </Style>
+                </Grid.Resources>
+
+                <Grid.RowDefinitions>
+                    <RowDefinition/>
+                    <RowDefinition Height="5"/>
+                    <RowDefinition/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition/>
+                    <ColumnDefinition Width="5"/>
+                    <ColumnDefinition/>
+                    <ColumnDefinition Width="5"/>
+                    <ColumnDefinition/>
+                </Grid.ColumnDefinitions>
+
+                <Button Command="{Binding ChooseApkCommand}"
+                    DragOver="Apk_DragOver" Drop="Apk_DragDrop"
+                    Style="{StaticResource PickDropButton}">
+                    <Button.Content>
+                        <TextBlock>
+                        <Run Text="Apk"/>
+                        <Run Style="{StaticResource CheckMarkRun}"
+                             Text="{Binding Apk.Value, StringFormat={}{0}, Converter={StaticResource NotNullParameterConverter}, ConverterParameter=✔, Mode=OneWay}"/>
+                        </TextBlock>
+                    </Button.Content>
+                </Button>
+
+                <Button Grid.Column="2"
+                    Command="{Binding ChooseDataCommand}"
+                    DragOver="Data_DragOver" Drop="Data_DragDrop"
+                    Style="{StaticResource PickDropButton}">
+                    <Button.Content>
+                        <TextBlock>
+                        <Run Text="Android/data"/>
+                        <Run Style="{StaticResource CheckMarkRun}"
+                             Text="{Binding Data.Value, StringFormat={}{0}, Converter={StaticResource NotNullParameterConverter}, ConverterParameter=✔, Mode=OneWay}"/>
+                        </TextBlock>
+                    </Button.Content>
+                </Button>
+
+                <Button Grid.Row="2"
+                    Command="{Binding ChooseSaveCommand}"
+                    DragOver="Save_DragOver" Drop="Save_DragDrop"
+                    Style="{StaticResource PickDropButton}">
+                    <Button.Content>
+                        <TextBlock>
+                        <Run Text="{x:Static localization:MainResources.Save}"/>
+                        <Run Style="{StaticResource CheckMarkRun}"
+                             Text="{Binding Save.Value, StringFormat={}{0}, Converter={StaticResource NotNullParameterConverter}, ConverterParameter=✔,
+                            Mode=OneWay}"/>
+                        </TextBlock>
+                    </Button.Content>
+                </Button>
+
+                <Button Grid.Row="2" Grid.Column="2"
+                    Command="{Binding ChooseObbCommand}"
+                    DragOver="Obb_DragOver" Drop="Obb_DragDrop"
+                    Style="{StaticResource PickDropButton}">
+                    <Button.Content>
+                        <TextBlock>
+                        <Run Text="Android/obb"/>
+                        <Run Style="{StaticResource CheckMarkRun}"
+                             Text="{Binding Obb.Value, StringFormat={}{0}, Converter={StaticResource NotNullParameterConverter}, ConverterParameter=✔, Mode=OneWay}"/>
+                        </TextBlock>
+                    </Button.Content>
+                </Button>
+
+                <Button Grid.Column="4"
+                    Grid.RowSpan="3"
+                    Command="{Binding StartCommand}"
+                    Content="{x:Static localization:MainResources.Begin}"
+                    Style="{StaticResource CommonButton}"/>
+            </Grid>
+
+            <Expander Grid.Row="1" Header="{x:Static localization:MainResources.AdditionalParameters}" Margin="-1,5">
+                <Border Margin="0,6,0,0" BorderBrush="{DynamicResource BorderNormalBrush}" BorderThickness="1"
+                        IsEnabled="{Binding Working.Value, Converter={StaticResource InvertBoolConverter}}">
+                    <DockPanel Margin="5">
+                        <DockPanel Dock="Top">
+                            <TextBlock Text="{x:Static localization:MainResources.Title}"
+                                   VerticalAlignment="Center"/>
+
+                            <TextBox Margin="8,0,0,0" MaxLength="1000"
+                                 Text="{Binding AppTitle.Value, UpdateSourceTrigger=PropertyChanged}"/>
+                        </DockPanel>
+
+                        <Label FontWeight="DemiBold" DockPanel.Dock="Top" Margin="0,5" HorizontalAlignment="Center" Content="{x:Static localization:MainResources.Icons}"
+                           ContentStringFormat="{}{0} (png)"/>
+
+                        <WrapPanel DockPanel.Dock="Top">
+                            <WrapPanel.Resources>
+                                <Style x:Key="TitleLabel" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                    <Setter Property="HorizontalAlignment" Value="Center"/>
+                                    <Setter Property="DockPanel.Dock" Value="Top"/>
+                                </Style>
+
+                                <Style x:Key="ImageBorder" TargetType="Border">
+                                    <Setter Property="AllowDrop" Value="True"/>
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="BorderThickness" Value="1"/>
+                                    <Setter Property="BorderBrush" Value="{DynamicResource BorderNormalBrush}"/>
+                                    <Setter Property="VerticalAlignment" Value="Top"/>
+                                    <Setter Property="HorizontalAlignment" Value="Center"/>
+                                </Style>
+                            </WrapPanel.Resources>
+
+                            <DockPanel>
+                                <TextBlock Text="xxhdpi" Style="{StaticResource TitleLabel}"/>
+
+                                <Border Tag="{x:Static enums:AndroidAppIcon.xxhdpi}"
+                                    Style="{StaticResource ImageBorder}"
+                                    MouseDown="ChooseImage_Click" DragOver="Icon_DragOver" Drop="Icon_Drop">
+                                    <Image ToolTip="144x144" Width="144" Height="144"
+                                       Source="{Binding IconsStorage.Icon_xxhdpi.Value, Mode=OneWay}" />
+                                </Border>
+                            </DockPanel>
+
+                            <DockPanel Margin="5,0">
+                                <TextBlock Text="xhdpi" Style="{StaticResource TitleLabel}"/>
+
+                                <Border Tag="{x:Static enums:AndroidAppIcon.xhdpi}"
+                                    Style="{StaticResource ImageBorder}"
+                                    MouseDown="ChooseImage_Click" DragOver="Icon_DragOver" Drop="Icon_Drop">
+                                    <Image ToolTip="96x96" Width="96" Height="96"
+                                       Source="{Binding IconsStorage.Icon_xhdpi.Value, Mode=OneWay}"/>
+                                </Border>
+                            </DockPanel>
+
+                            <DockPanel>
+                                <TextBlock Text="hdpi" Style="{StaticResource TitleLabel}"/>
+
+                                <Border Tag="{x:Static enums:AndroidAppIcon.hdpi}"
+                                    Style="{StaticResource ImageBorder}"
+                                    MouseDown="ChooseImage_Click" DragOver="Icon_DragOver" Drop="Icon_Drop">
+                                    <Image ToolTip="72x72" Width="72" Height="72"
+                                       Source="{Binding IconsStorage.Icon_hdpi.Value, Mode=OneWay}"/>
+                                </Border>
+                            </DockPanel>
+
+                            <DockPanel Margin="5,0,0,0">
+                                <TextBlock Text="mdpi" Style="{StaticResource TitleLabel}"/>
+
+                                <Border Tag="{x:Static enums:AndroidAppIcon.mdpi}"
+                                    Style="{StaticResource ImageBorder}"
+                                    MouseDown="ChooseImage_Click" DragOver="Icon_DragOver" Drop="Icon_Drop">
+                                    <Image ToolTip="48x48" Width="48" Height="48"
+                                       Source="{Binding IconsStorage.Icon_mdpi.Value}"/>
+                                </Border>
+                            </DockPanel>
+                        </WrapPanel>
+                    </DockPanel>
+                </Border>
+            </Expander>
+
+            <TextBox
+                x:Name="LogBox" Grid.Row="2"
+                VerticalScrollBarVisibility="Auto"
+                TextWrapping="Wrap"
+                IsReadOnly="True"
+                AcceptsReturn="True"
+                Text="{Binding LogText.Value, Mode=OneWay}"/>
+        </Grid>
+
+        <controls:StatusProgress x:Name="StatusProgress" Grid.Row="1"/>
+    </Grid>
+</Window>

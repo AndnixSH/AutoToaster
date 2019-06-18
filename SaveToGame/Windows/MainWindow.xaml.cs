@@ -1,0 +1,557 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Shell;
+using AndroidHelper.Logic;
+using AndroidHelper.Logic.Interfaces;
+using Interfaces.OrganisationItems;
+using Interfaces.ViewModels;
+using JetBrains.Annotations;
+using LongPaths.Logic;
+using MVVM_Tools.Code.Disposables;
+using SaveToGameWpf.Logic;
+using SaveToGameWpf.Logic.Classes;
+using SaveToGameWpf.Logic.OrganisationItems;
+using SaveToGameWpf.Logic.Utils;
+using SaveToGameWpf.Resources;
+using SaveToGameWpf.Resources.Localizations;
+using SharedData.Enums;
+using Application = System.Windows.Application;
+using DragEventArgs = System.Windows.DragEventArgs;
+using ATempUtils = AndroidHelper.Logic.Utils.TempUtils;
+
+namespace SaveToGameWpf.Windows
+{
+    public sealed partial class MainWindow
+    {
+        private string RealPath = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) + "\\";
+
+        // how many times app should try to create log file for the apk file processing
+        private const int LogCreationTries = 50;
+
+        private static readonly string Line = new string('-', 50);
+
+        [NotNull] private readonly IAppSettings _settings;
+        [NotNull] private readonly ApplicationUtils _applicationUtils;
+        [NotNull] private readonly Provider<MainWindow> _mainWindowProvider;
+        [NotNull] private readonly Provider<InstallApkWindow> _installApkWindowProvider;
+        [NotNull] private readonly Provider<AboutWindow> _aboutWindowProvider;
+        [NotNull] private readonly Provider<AdbInstallWindow> _adbInstallWindowProvider;
+        [NotNull] private readonly NotificationManager _notificationManager;
+        [NotNull] private readonly TempUtils _tempUtils;
+        [NotNull] private readonly GlobalVariables _globalVariables;
+        [NotNull] private readonly Utils _utils;
+        [NotNull] private readonly Provider<IApktool> _apktoolProvider;
+
+        private readonly IVisualProgress _visualProgress;
+        private readonly ITaskBarManager _taskBarManager;
+
+        public IMainWindowViewModel ViewModel { get; }
+
+        private StreamWriter _currentLog;
+
+        private bool _shutdownOnClose = true;
+
+        public MainWindow(
+            [NotNull] IAppSettings appSettings,
+            [NotNull] ApplicationUtils applicationUtils,
+            [NotNull] IMainWindowViewModel viewModel,
+            [NotNull] Provider<MainWindow> mainWindowProvider,
+            [NotNull] Provider<InstallApkWindow> installApkWindowProvider,
+            [NotNull] Provider<AboutWindow> aboutWindowProvider,
+            [NotNull] Provider<AdbInstallWindow> adbInstallWindowProvider,
+            [NotNull] NotificationManager notificationManager,
+            [NotNull] TempUtils tempUtils,
+            [NotNull] GlobalVariables globalVariables,
+            [NotNull] Utils utils,
+            [NotNull] Provider<IApktool> apktoolProvider
+        )
+        {
+            _settings = appSettings;
+            _applicationUtils = applicationUtils;
+            _mainWindowProvider = mainWindowProvider;
+            _installApkWindowProvider = installApkWindowProvider;
+            _aboutWindowProvider = aboutWindowProvider;
+            _adbInstallWindowProvider = adbInstallWindowProvider;
+            _notificationManager = notificationManager;
+            _tempUtils = tempUtils;
+            _globalVariables = globalVariables;
+            _utils = utils;
+            _apktoolProvider = apktoolProvider;
+
+            ViewModel = viewModel;
+            DataContext = ViewModel;
+
+            InitializeComponent();
+
+            _taskBarManager = new TaskBarManager(TaskbarItemInfo = new TaskbarItemInfo());
+
+            _visualProgress = StatusProgress.GetVisualProgress();
+
+            _visualProgress.SetLabelText(MainResources.AllDone);
+        }
+
+        private string GetDiskLetter()
+        {
+            return Path.GetPathRoot(RealPath).Replace("\\", "");
+        }
+
+        #region Window events
+
+        private async void MainWindow_Loaded(object sender, EventArgs e)
+        {
+            await CheckJavaExistence();
+        }
+
+        private void MainWindow_OnClosed(object sender, EventArgs e)
+        {
+            _settings.PopupMessage = ViewModel.PopupBoxText.Value;
+            if (_shutdownOnClose)
+            {
+                Application.Current.Shutdown();
+            }
+        }
+
+        #endregion
+
+        #region Button click handlers
+
+        private void ChooseApkBtn_Click(object sender, EventArgs e)
+        {
+            var (success, filePath) = PickerUtils.PickFile(filter: MainResources.AndroidFiles + @" (*.apk)|*.apk");
+
+            if (!success)
+                return;
+
+            ViewModel.CurrentApk.Value = filePath;
+            ChooseApkButton.ToolTip = filePath;
+        }
+
+
+        //Clear framework
+        private void ChooseSaveBtn_Click(object sender, EventArgs e)
+        {
+            Process p = new Process();
+            p.StartInfo.UseShellExecute = false;
+            p.StartInfo.RedirectStandardOutput = true;
+            p.StartInfo.RedirectStandardError = true;
+            p.StartInfo.RedirectStandardInput = true;
+            p.StartInfo.CreateNoWindow = true;
+            p.StartInfo.WorkingDirectory = null;
+            p.StartInfo.Arguments = null;
+            p.StartInfo.FileName = "cmd.exe";
+            p.Start();
+            p.StandardInput.WriteLine(GetDiskLetter());
+            p.StandardInput.WriteLine("cd " + RealPath + "Resources");
+            p.StandardInput.WriteLine("java -jar apktool.jar empty-framework-dir --force");
+            p.StandardInput.WriteLine("exit");
+            p.WaitForExit();
+            MessBox.ShowDial(
+               "Framework Cleared",
+               "Auto toaster",
+               MainResources.OK
+           );
+        }
+
+        // StartBtn_Click
+        private async void StartBtn_Click(object sender, EventArgs e)
+        {
+            string apkFile = ViewModel.CurrentApk.Value;
+            string saveFile = ViewModel.CurrentSave.Value;
+
+            #region Проверка на существование файлов
+
+            if (string.IsNullOrEmpty(apkFile) || !LFile.Exists(apkFile) ||
+                (ViewModel.SavePlusMess.Value || ViewModel.OnlySave.Value) &&
+                (string.IsNullOrEmpty(saveFile) || !LFile.Exists(saveFile) && !LDirectory.Exists(saveFile))
+            )
+            {
+                HaveError(MainResources.File_or_save_not_selected, MainResources.File_or_save_not_selected);
+                return;
+            }
+
+            #endregion
+
+            using (CreateWorking())
+            {
+                try
+                {
+                    var currentCulture = Thread.CurrentThread.CurrentUICulture;
+                    await Task.Factory.StartNew(() =>
+                    {
+                        Thread.CurrentThread.CurrentCulture = currentCulture;
+                        Thread.CurrentThread.CurrentUICulture = currentCulture;
+
+                        ProcessAll();
+                    });
+                }
+                catch (PathTooLongException ex)
+                {
+                    HaveError(Environment.NewLine + ex, MainResources.PathTooLongExceptionMessage);
+                }
+                catch (Exception ex)
+                {
+#if DEBUG
+                    Debug.WriteLine(ex.ToString());
+                    throw;
+#else
+                    _globalVariables.ErrorClient.Notify(ex);
+                    HaveError(Environment.NewLine + ex, MainResources.Some_Error_Found);
+#endif
+                }
+                finally
+                {
+                    _currentLog?.Close();
+                    _currentLog = null;
+                }
+            }
+        }
+
+        #endregion
+
+        #region Button Drag & Drop handlers
+
+        private void Apk_DragOver(object sender, DragEventArgs e)
+        {
+            e.CheckDragOver(".apk");
+        }
+
+        private void Apk_DragDrop(object sender, DragEventArgs e)
+        {
+            e.DropOneByEnd(".apk", file => ViewModel.CurrentApk.Value = file);
+        }
+
+        #endregion
+
+        #region Menu element handlers
+
+        private void InstallApkClick(object sender, RoutedEventArgs e)
+        {
+            _installApkWindowProvider.Get().ShowDialog();
+        }
+
+        private void ChangeLanguageClick(object sender, RoutedEventArgs e)
+        {
+            _settings.Language = sender.As<FrameworkElement>().Tag.As<string>();
+            _applicationUtils.SetLanguageFromSettings();
+
+            _shutdownOnClose = false;
+
+            Close();
+            _mainWindowProvider.Get().Show();
+        }
+
+        private void AboutProgramItem_Click(object sender, EventArgs e)
+        {
+            _aboutWindowProvider.Get().ShowDialog();
+        }
+
+        #endregion
+
+        private void ProcessAll()
+        {
+            Dispatcher.Invoke(LogBox.Clear);
+
+            Log(
+                string.Format(
+                    "{0}{1}Start{1}{0}ExePath = {2}{0}Resources = {3}",
+                    Environment.NewLine,
+                    Line,
+                    _globalVariables.PathToExe,
+                    _globalVariables.PathToResources
+                )
+            );
+
+            const int totalSteps = 3;
+
+            _visualProgress.SetBarUsual();
+            _visualProgress.ShowBar();
+
+            _taskBarManager.SetProgress(0);
+            _taskBarManager.SetUsualState();
+
+            void SetStep(int currentStep, string status)
+            {
+                int percentage = (currentStep - 1) * 100 / totalSteps;
+
+                _visualProgress.SetBarValue(percentage);
+                _visualProgress.SetLabelText(status);
+                _taskBarManager.SetProgress(percentage);
+            }
+
+            #region Инициализация
+
+            SetStep(1, MainResources.StepInitializing);
+            _visualProgress.ShowIndeterminateLabel();
+
+            string sourceApkPath = ViewModel.CurrentApk.Value;
+            bool alternativeSigning = _settings.AlternativeSigning;
+
+            string popupText = ViewModel.PopupBoxText.Value;
+            int messagesCount = ViewModel.MessagesCount.Value;
+
+            bool needMessage = true;
+
+            BackupType backupType = ViewModel.BackupType.Value;
+
+            ITempFileProvider tempFileProvider = _tempUtils.CreateTempFileProvider();
+            ITempFolderProvider tempFolderProvider = _tempUtils.CreateTempFolderProvider();
+
+            string resultApkPath = sourceApkPath.Remove(sourceApkPath.Length - Path.GetExtension(sourceApkPath).Length) + "_signed.apk";
+            string pathToSave = ViewModel.CurrentSave.Value;
+
+            IApktool apktool = _apktoolProvider.Get();
+            IProcessDataHandler dataHandler = new ProcessDataCombinedHandler(data => Log(data));
+
+            #endregion
+
+            #region Change apk
+            // Temp
+            using (var tempApk = ATempUtils.UseTempFile(tempFileProvider))
+            {
+                LFile.Copy(sourceApkPath, tempApk.TempFile, true); //Copy apk file to temp 
+
+                #region Adding data
+                SetStep(2, MainResources.StepAddingData);
+
+                var aes = new AesManaged { KeySize = 128 };
+                aes.GenerateIV();
+                aes.GenerateKey();
+
+                // adding smali file for restoring
+                using (var decompiledFolder = ATempUtils.UseTempFolder(tempFolderProvider))
+                {
+                    apktool.Baksmali(
+                        apkPath: tempApk.TempFile,
+                        resultFolder: decompiledFolder.TempFolder,
+                        tempFolderProvider: tempFolderProvider,
+                        dataHandler: dataHandler
+                    );
+
+                    var manifestPath = Path.Combine(decompiledFolder.TempFolder, "AndroidManifest.xml");
+
+                    apktool.ExtractSimpleManifest(
+                        apkPath: tempApk.TempFile,
+                        resultManifestPath: manifestPath,
+                        tempFolderProvider: tempFolderProvider
+                    );
+
+                    // have to have smali folders in the same directory as manifest
+                    // to find the main smali
+                    var manifest = new AndroidManifest(manifestPath);
+
+                    if (manifest.MainSmaliFile == null)
+                        throw new Exception("main smali file not found");
+
+                    // using this instead of just pasting "folder/smali" as there can be
+                    // no smali folder sometimes (smali_1, etc)
+                    string smaliDir = manifest.MainSmaliPath.Substring(decompiledFolder.TempFolder.Length + 1);
+                    smaliDir = smaliDir.Substring(0, smaliDir.IndexOf(Path.DirectorySeparatorChar));
+
+                    string saveGameDir = Path.Combine(decompiledFolder.TempFolder, smaliDir, "com", "savegame");
+
+                    LDirectory.CreateDirectory(saveGameDir);
+
+                    //Encrypt smali
+                    CommonUtils.GenerateAndSaveSmali(
+                        filePath: Path.Combine(saveGameDir, "SavesRestoringPortable.smali"),
+                        message: needMessage ? popupText : string.Empty,
+                        messagesCount: needMessage ? messagesCount : 0
+                    );
+
+                    manifest.MainSmaliFile.AddTextToMethod(FileResources.MainSmaliCall);
+                    manifest.MainSmaliFile.Save();
+
+                    using (var folderWithDexes = ATempUtils.UseTempFolder(tempFolderProvider))
+                    {
+                        apktool.Smali(
+                            folderWithSmali: decompiledFolder.TempFolder,
+                            resultFolder: folderWithDexes.TempFolder,
+                            dataHandler: dataHandler
+                        );
+
+                        string[] dexes = LDirectory.GetFiles(folderWithDexes.TempFolder, "*.dex");
+
+                        ApkModifer.AddFilesToZip(
+                            zipPath: tempApk.TempFile,
+                            filePaths: dexes,
+                            pathsInZip: Array.ConvertAll(dexes, Path.GetFileName),
+                            newEntryCompression: CompressionType.Store
+                        );
+                    }
+                }
+
+                #endregion
+
+                #region Подпись
+
+                SetStep(3, MainResources.StepSigning);
+
+                Log(Line);
+                Log(MainResources.StepSigning);
+                Log(Line);
+
+                LFile.Copy(tempApk.TempFile, Path.GetDirectoryName(sourceApkPath) + "\\" + Path.GetFileNameWithoutExtension(sourceApkPath) + "_unsigned.apk", true); //Copy apk file to temp 
+
+                //Signing
+                //tempApk.TempFile "C:\\Users\\xxxxx\\AppData\\Local\\SaveToGame\\temp\\temp_entry_1"
+                apktool.Sign(
+                    sourceApkPath: tempApk.TempFile,
+                    signedApkPath: resultApkPath,
+                    tempFileProvider: tempFileProvider,
+                    dataHandler: dataHandler,
+                    deleteMetaInf: !alternativeSigning
+                );
+
+                #endregion
+            }
+
+            #endregion
+
+            _visualProgress.HideIndeterminateLabel();
+            SetStep(4, MainResources.AllDone);
+            Log(MainResources.AllDone);
+            Log(string.Empty, false);
+            Log($"{MainResources.Path_to_file} {resultApkPath}");
+
+            _globalVariables.LatestModdedApkPath = resultApkPath;
+
+            if (_settings.Notifications)
+            {
+                _notificationManager.Show(
+                    title: MainResources.Information_Title,
+                    text: MainResources.ModificationCompletedContent
+                );
+            }
+
+            string dialogResult = MessBox.ShowDial(
+                $"{MainResources.Path_to_file} {resultApkPath}",
+                MainResources.Successful,
+                MainResources.OK, MainResources.Open, MainResources.Install
+            );
+
+            _visualProgress.HideBar();
+            _taskBarManager.SetNoneState();
+
+            //Dialog result
+            if (dialogResult == MainResources.Open)
+            {
+                Process.Start("explorer.exe", $"/select,{resultApkPath}");
+            }
+            else if (dialogResult == MainResources.Install)
+            {
+                Dispatcher.Invoke(() => _adbInstallWindowProvider.Get().ShowDialog());
+            }
+        }
+
+        private async Task CheckJavaExistence()
+        {
+            if (LDirectory.Exists(_globalVariables.PathToPortableJre))
+                return;
+
+            MessBox.ShowDial(
+                MainResources.JavaInvalidVersion,
+                MainResources.Information_Title,
+                MainResources.OK
+            );
+
+            _visualProgress.SetBarValue(0);
+
+            using (CreateWorking())
+            {
+                _visualProgress.SetBarUsual();
+                _visualProgress.ShowBar();
+
+                await _utils.DownloadJava(_visualProgress);
+
+                _visualProgress.HideBar();
+            }
+        }
+
+        public void Log(string text, bool skipEmpty = true)
+        {
+            if (skipEmpty && string.IsNullOrEmpty(text))
+                return;
+
+            _currentLog?.WriteLine(text);
+
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                LogBox.AppendText(text + Environment.NewLine);
+                LogBox.ScrollToEnd();
+            });
+        }
+
+        private void HaveError(string errorText, string dialogMessage = null)
+        {
+            Log($"{MainResources.Error}: {errorText}");
+
+            if (string.IsNullOrEmpty(dialogMessage))
+                return;
+
+            MessBox.ShowDial(dialogMessage, MainResources.Error);
+        }
+
+        private void ChangeTheme_OnClick(object sender, RoutedEventArgs e)
+        {
+            var theme = sender.As<FrameworkElement>().Tag.As<string>();
+
+            ThemeUtils.SetTheme(theme);
+            _settings.Theme = theme;
+        }
+
+        private StreamWriter CreateLogFileForApp(string pathToApkFile)
+        {
+            string apkDir = Path.GetDirectoryName(pathToApkFile) ?? string.Empty;
+
+            string GenLogName(int index)
+            {
+                string logStart = Path.Combine(apkDir, $"{Path.GetFileNameWithoutExtension(pathToApkFile)}_log");
+
+                return logStart + (index == 1 ? ".txt" : $" ({index}).txt");
+            }
+
+            int i = 1;
+            while (true)
+            {
+                try
+                {
+                    return new StreamWriter(GenLogName(i++), false, Encoding.UTF8);
+                }
+                catch (Exception
+#if !DEBUG
+                    ex
+#endif
+                )
+                {
+                    if (i <= LogCreationTries)
+                        continue;
+
+#if !DEBUG
+                    _globalVariables.ErrorClient.Notify(ex);
+#else
+                    throw;
+#endif
+                }
+            }
+        }
+
+        #region Disposables
+
+        private CustomBoolDisposable CreateWorking()
+        {
+            return new CustomBoolDisposable(val =>
+            {
+                ViewModel.Working.Value = val;
+            });
+        }
+
+        #endregion
+    }
+}
